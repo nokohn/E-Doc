@@ -1,0 +1,6 @@
+{
+  "name": "E-Document Management System (ລະບົບຈັດການເອກະສານຂາເຂົ້າ–ຂາອອກ)",
+  "description": "ລະບົບຈັດການເອກະສານຂາເຂົ້າ ແລະ ເອກະສານຂາອອກ ແບບ Digital Workflow ສຳລັບລັດວິສາຫະກິດ",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,19 @@
+{
+  "id": "/",
+  "name": "ລະບົບຈັດການເອກະສານຂາເຂົ້າ–ຂາອອກ (LHSE E-Document MS)",
+  "short_name": "LHSE E-Doc",
+  "description": "ລະບົບຈັດການເອກະສານຂາເຂົ້າ ແລະ ເອກະສານຂາອອກ ແບບ Digital Workflow 24/7 ສຳລັບລັດວິສາຫະກິດຖືຮຸ້ນລາວ (nokohn@mail.com)",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#4f46e5",
+  "icons": [
+    {
+      "src": "/logo.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

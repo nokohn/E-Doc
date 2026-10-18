@@ -1,0 +1,71 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'nokohn@gmail.com' ||
+        request.auth.token.email == 'nokohn@mail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidDocumentRecord(data) {
+      return data.keys().hasAll(['id', 'direction', 'documentNumber', 'subject', 'status', 'currentStepOrder']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.direction is string && (data.direction == 'INCOMING' || data.direction == 'OUTGOING') &&
+        data.documentNumber is string && data.documentNumber.size() >= 1 && data.documentNumber.size() <= 120 &&
+        data.subject is string && data.subject.size() >= 1 && data.subject.size() <= 1000 &&
+        data.status is string && data.status.size() <= 64 &&
+        data.currentStepOrder is number;
+    }
+
+    function isValidSavedSearchItem(data) {
+      return data.keys().hasAll(['id', 'name', 'userId', 'notifyOnMatch', 'createdAt']) &&
+        data.id is string && data.id.size() >= 1 && data.id.size() <= 128 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 200 &&
+        data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 &&
+        data.notifyOnMatch is bool &&
+        data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    match /documents/{docId} {
+      allow get: if isSignedIn() && isValidId(docId) && (isAdmin() || existing().ownerUid == request.auth.uid || existing().createdBy is string);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.ownerUid == request.auth.uid || resource.data.direction in ['INCOMING', 'OUTGOING']);
+      allow create: if isVerifiedUser() && isValidId(docId) && incoming().id == docId && isValidDocumentRecord(incoming());
+      allow update: if isVerifiedUser() && isValidId(docId) && isValidDocumentRecord(incoming()) && incoming().id == existing().id;
+      allow delete: if isAdmin() && isValidId(docId);
+    }
+
+    match /saved_searches/{searchId} {
+      allow get: if isSignedIn() && isValidId(searchId) && (isAdmin() || existing().ownerUid == request.auth.uid || existing().userId is string);
+      allow list: if isSignedIn() && (isAdmin() || resource.data.ownerUid == request.auth.uid || resource.data.notifyOnMatch is bool);
+      allow create: if isVerifiedUser() && isValidId(searchId) && incoming().id == searchId && isValidSavedSearchItem(incoming());
+      allow update: if isVerifiedUser() && isValidId(searchId) && isValidSavedSearchItem(incoming()) && incoming().id == existing().id;
+      allow delete: if isVerifiedUser() && isValidId(searchId) && (isAdmin() || existing().ownerUid == request.auth.uid);
+    }
+  }
+}
