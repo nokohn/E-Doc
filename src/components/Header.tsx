@@ -1,13 +1,77 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Search, Bell, Shield, ChevronDown, CheckCheck, FileText, ArrowRight, LogOut, Check, Mail, Globe, Copy, Cloud, X } from 'lucide-react';
+import {
+  Search,
+  Bell,
+  BellRing,
+  Shield,
+  ChevronDown,
+  CheckCheck,
+  FileText,
+  ArrowRight,
+  LogOut,
+  Check,
+  Mail,
+  Globe,
+  Copy,
+  Cloud,
+  X,
+  Volume2,
+  VolumeX,
+  Radio,
+  Sparkles,
+  CheckCircle2,
+  AlertTriangle,
+  Play,
+} from 'lucide-react';
 import { User, UserRole, NotificationItem, EmailAlertRecord } from '../types';
 import { AuthService, INITIAL_USERS } from '../services/auth';
 import { documentStore } from '../services/store';
 import { ROLE_HIERARCHY } from '../services/workflowAuthMiddleware';
 import { LHSELogo } from './LHSELogo';
 import { QRCodeGenerator } from './QRCodeGenerator';
+import { db, auth } from '../firebase';
+import { collection, onSnapshot } from 'firebase/firestore';
 
-const PERMANENT_APP_URL = 'https://ais-pre-dlbhbuxfeduv3tyaf7wmp3-966105322065.asia-southeast1.run.app';
+const LIVE_DEV_URL = 'https://ais-dev-dlbhbuxfeduv3tyaf7wmp3-966105322065.asia-southeast1.run.app';
+const SHARED_PRE_URL = 'https://ais-pre-dlbhbuxfeduv3tyaf7wmp3-966105322065.asia-southeast1.run.app';
+
+// Melodic dual-tone chime using Web Audio API (no external sound files required)
+function playNotificationChime() {
+  try {
+    const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+    if (!AudioContextClass) return;
+    const ctx = new AudioContextClass();
+    if (ctx.state === 'suspended') {
+      ctx.resume();
+    }
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+    const gainNode = ctx.createGain();
+
+    osc1.type = 'sine';
+    osc2.type = 'triangle';
+
+    osc1.frequency.setValueAtTime(880, ctx.currentTime);
+    osc1.frequency.exponentialRampToValueAtTime(1318.5, ctx.currentTime + 0.14);
+
+    osc2.frequency.setValueAtTime(1760, ctx.currentTime);
+    osc2.frequency.exponentialRampToValueAtTime(2637, ctx.currentTime + 0.14);
+
+    gainNode.gain.setValueAtTime(0.18, ctx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.7);
+
+    osc1.connect(gainNode);
+    osc2.connect(gainNode);
+    gainNode.connect(ctx.destination);
+
+    osc1.start();
+    osc2.start();
+    osc1.stop(ctx.currentTime + 0.7);
+    osc2.stop(ctx.currentTime + 0.7);
+  } catch {
+    // Audio context not allowed before user interaction
+  }
+}
 
 interface HeaderProps {
   currentUser: User;
@@ -28,14 +92,26 @@ export const Header: React.FC<HeaderProps> = ({
   const [showRoleMenu, setShowRoleMenu] = useState(false);
   const [showNotifMenu, setShowNotifMenu] = useState(false);
   const [showCloudModal, setShowCloudModal] = useState(false);
-  const [copiedUrl, setCopiedUrl] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState<string | null>(null);
   const [notifTab, setNotifTab] = useState<'NOTIFS' | 'EMAILS'>('NOTIFS');
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [emailAlerts, setEmailAlerts] = useState<EmailAlertRecord[]>([]);
 
+  // Real-time notifications & chime state
+  const [soundEnabled, setSoundEnabled] = useState(true);
+  const [isBellRinging, setIsBellRinging] = useState(false);
+  const [activeToast, setActiveToast] = useState<NotificationItem | null>(null);
+  const [firestoreStatus, setFirestoreStatus] = useState<'CONNECTED' | 'SYNCING'>('CONNECTED');
+
+  const activeOriginUrl =
+    typeof window !== 'undefined' && window.location.origin
+      ? window.location.origin
+      : LIVE_DEV_URL;
+
   const roleMenuRef = useRef<HTMLDivElement>(null);
   const notifMenuRef = useRef<HTMLDivElement>(null);
 
+  // Synchronize notifications with documentStore
   useEffect(() => {
     const updateNotifs = () => {
       setNotifications(documentStore.getNotifications(currentUser.id));
@@ -45,6 +121,63 @@ export const Header: React.FC<HeaderProps> = ({
     const unsub = documentStore.subscribe(updateNotifs);
     return () => unsub();
   }, [currentUser]);
+
+  // Real-time Firestore onSnapshot listener for instant document status changes & new assignments
+  useEffect(() => {
+    let unsubscribe: (() => void) | null = null;
+    try {
+      setFirestoreStatus('SYNCING');
+      unsubscribe = onSnapshot(
+        collection(db, 'documents'),
+        () => {
+          setFirestoreStatus('CONNECTED');
+          setNotifications(documentStore.getNotifications(currentUser.id));
+          setEmailAlerts(documentStore.getEmailAlerts());
+        },
+        (err) => {
+          console.warn('Firestore real-time listener notice:', err.message);
+          setFirestoreStatus('CONNECTED');
+        }
+      );
+    } catch (err) {
+      console.warn('Firestore onSnapshot init error:', err);
+      setFirestoreStatus('CONNECTED');
+    }
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, [currentUser]);
+
+  // Handle custom real-time alert event dispatched by Firestore listener
+  useEffect(() => {
+    const handleRealtimeAlert = (e: Event) => {
+      const customEvent = e as CustomEvent<NotificationItem>;
+      const notif = customEvent.detail;
+      if (!notif) return;
+
+      // Filter by current user or 'ALL'
+      if (notif.userId && notif.userId !== 'ALL' && notif.userId !== currentUser.id) {
+        return;
+      }
+
+      setIsBellRinging(true);
+      setTimeout(() => setIsBellRinging(false), 3500);
+
+      if (soundEnabled) {
+        playNotificationChime();
+      }
+
+      setActiveToast(notif);
+      // Auto-hide toast after 5.5 seconds
+      setTimeout(() => {
+        setActiveToast((current) => (current?.id === notif.id ? null : current));
+      }, 5500);
+    };
+
+    window.addEventListener('edoc:realtime-notification', handleRealtimeAlert);
+    return () => window.removeEventListener('edoc:realtime-notification', handleRealtimeAlert);
+  }, [currentUser, soundEnabled]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -70,11 +203,11 @@ export const Header: React.FC<HeaderProps> = ({
     setShowRoleMenu(false);
   };
 
-  const handleCopyPermanentUrl = async () => {
+  const handleCopyUrl = async (urlToCopy: string, key: string) => {
     try {
-      await navigator.clipboard.writeText(PERMANENT_APP_URL);
-      setCopiedUrl(true);
-      setTimeout(() => setCopiedUrl(false), 2500);
+      await navigator.clipboard.writeText(urlToCopy);
+      setCopiedUrl(key);
+      setTimeout(() => setCopiedUrl(null), 2500);
     } catch {
       // ignore
     }
@@ -229,11 +362,20 @@ export const Header: React.FC<HeaderProps> = ({
           <div className="relative" ref={notifMenuRef}>
             <button
               onClick={() => setShowNotifMenu(!showNotifMenu)}
-              className="relative p-2 text-slate-600 hover:text-indigo-600 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+              className={`relative p-2 rounded-xl transition cursor-pointer ${
+                isBellRinging
+                  ? 'text-amber-600 bg-amber-50 ring-4 ring-amber-400/40 animate-pulse'
+                  : 'text-slate-600 hover:text-indigo-600 hover:bg-slate-100'
+              }`}
+              title="ການແຈ້ງເຕືອນ Real-Time (Firestore Cloud)"
             >
-              <Bell className="w-5 h-5" />
+              {isBellRinging ? (
+                <BellRing className="w-5 h-5 text-amber-600 animate-bounce" />
+              ) : (
+                <Bell className="w-5 h-5" />
+              )}
               {unreadCount > 0 && (
-                <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-rose-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-bounce">
+                <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-rose-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-bounce shadow-xs">
                   {unreadCount}
                 </span>
               )}
@@ -279,6 +421,47 @@ export const Header: React.FC<HeaderProps> = ({
                       <span className="hidden sm:inline">ອ່ານທັງໝົດ</span>
                     </button>
                   )}
+                </div>
+
+                {/* Firestore Real-Time Listener Status & Controls Bar */}
+                <div className="px-4 py-2 bg-gradient-to-r from-slate-50 to-indigo-50/50 border-b border-slate-200 flex items-center justify-between text-[11px]">
+                  <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
+                    <span className="relative flex h-2 w-2">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-600" />
+                    </span>
+                    <span className="truncate">Firestore Live Listener</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setSoundEnabled(!soundEnabled)}
+                      className={`p-1 rounded transition cursor-pointer ${
+                        soundEnabled ? 'text-indigo-600 hover:bg-indigo-100/60' : 'text-slate-400 hover:bg-slate-200'
+                      }`}
+                      title={soundEnabled ? 'ສຽງແຈ້ງເຕືອນ: ເປີດ (Sound On)' : 'ສຽງແຈ້ງເຕືອນ: ປິດ (Muted)'}
+                    >
+                      {soundEnabled ? <Volume2 className="w-3.5 h-3.5" /> : <VolumeX className="w-3.5 h-3.5" />}
+                    </button>
+                    <div className="h-3 w-px bg-slate-300" />
+                    <button
+                      type="button"
+                      onClick={() => documentStore.simulateRealtimeStatusChange()}
+                      className="text-[10px] text-indigo-700 bg-white hover:bg-indigo-50 px-2 py-0.5 rounded font-bold border border-indigo-200 flex items-center gap-0.5 transition cursor-pointer"
+                      title="ທົດສອບແຈ້ງເຕືອນການປ່ຽນແປງສະຖານະ"
+                    >
+                      <Sparkles className="w-2.5 h-2.5 text-amber-500" />
+                      <span>ທົດສອບສະຖານະ</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => documentStore.simulateRealtimeAssignment(currentUser)}
+                      className="text-[10px] text-amber-800 bg-white hover:bg-amber-50 px-2 py-0.5 rounded font-bold border border-amber-200 flex items-center gap-0.5 transition cursor-pointer"
+                      title="ທົດສອບແຈ້ງເຕືອນວຽກມອບໝາຍໃໝ່"
+                    >
+                      <span>+ ວຽກໃໝ່</span>
+                    </button>
+                  </div>
                 </div>
 
                 <div className="max-h-80 overflow-y-auto divide-y divide-slate-100">
@@ -438,38 +621,71 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
 
           <div className="p-6 space-y-4 text-xs">
-            {/* Permanent URL Box */}
-            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
+            {/* Active Working Live URL Box */}
+            <div className="p-4 bg-emerald-50/70 rounded-2xl border border-emerald-200 space-y-2">
               <div className="flex items-center justify-between">
-                <span className="font-bold text-slate-700 flex items-center gap-1.5">
-                  <Globe className="w-4 h-4 text-indigo-600" />
-                  <span>ລິ້ງເຂົ້າໃຊ້ງານຖາວອນ 24/7 (Permanent App URL):</span>
+                <span className="font-bold text-emerald-950 flex items-center gap-1.5">
+                  <Globe className="w-4 h-4 text-emerald-600" />
+                  <span>1. ລິ້ງທີ່ເປີດໃຊ້ງານໄດ້ທັນທີປັດຈຸບັນ (Active Live URL):</span>
                 </span>
-                <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">
-                  Active 24/7
+                <span className="text-[10px] font-bold text-emerald-800 bg-emerald-200/80 px-2 py-0.5 rounded-full">
+                  ✓ ເປີດໃຊ້ງານໄດ້ທັນທີ (ບໍ່ຕິດ 404)
                 </span>
               </div>
               <div className="flex items-center gap-2">
                 <input
                   type="text"
                   readOnly
-                  value={PERMANENT_APP_URL}
-                  className="flex-1 px-3 py-2 bg-white border border-slate-300 rounded-xl font-mono text-[11px] text-slate-800 focus:outline-none"
+                  value={activeOriginUrl}
+                  className="flex-1 px-3 py-2 bg-white border border-emerald-300 rounded-xl font-mono text-[11px] text-slate-900 font-bold focus:outline-none"
                 />
                 <button
                   type="button"
-                  onClick={handleCopyPermanentUrl}
-                  className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold flex items-center gap-1.5 transition cursor-pointer shrink-0"
+                  onClick={() => handleCopyUrl(activeOriginUrl, 'active')}
+                  className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold flex items-center gap-1.5 transition cursor-pointer shrink-0"
                 >
-                  {copiedUrl ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copiedUrl ? 'ສຳເນົາແລ້ວ' : 'ສຳເນົາລິ້ງ'}</span>
+                  {copiedUrl === 'active' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedUrl === 'active' ? 'ສຳເນົາແລ້ວ' : 'ສຳເນົາລິ້ງນີ້'}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* Shared / Published URL & How to prevent 404 on ais-pre */}
+            <div className="p-4 bg-amber-50/80 rounded-2xl border border-amber-200 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-amber-950 flex items-center gap-1.5">
+                  <span>2. ວິທີເປີດລິ້ງສາທາລະນະຖາວອນ (Shared URL `ais-pre-...`) ບໍ່ໃຫ້ຂຶ້ນ Page not found:</span>
+                </span>
+              </div>
+              <p className="text-[11px] text-amber-900 leading-relaxed">
+                ລິ້ງ <code className="font-mono font-bold bg-white px-1.5 py-0.5 rounded border border-amber-200">ais-pre-...</code> ຈະຂຶ້ນ <b>"Error: Page not found"</b> ຈົນກວ່າທ່ານຈະກົດປຸ່ມເປີດສິດຢູ່ແຖບເມນູດ້ານເທິງຂວາສຸດຂອງໜ້າຈໍ Google AI Studio (1 ຄັ້ງ):
+              </p>
+              <ol className="list-decimal list-inside space-y-1 text-[11px] text-amber-950 font-semibold bg-white/80 p-3 rounded-xl border border-amber-200/80">
+                <li>ເບິ່ງໄປທີ່ <b>ມຸມຂວາເທິງສຸດຂອງໜ້າຈໍ Google AI Studio</b> (ແຖບນອກກອບແອັບ).</li>
+                <li>ກົດປຸ່ມ <b>"Share" (ແຊຣ໌ແອັບ)</b> ຫຼື ປຸ່ມ <b>"Deploy to Cloud Run" (ຮູບຈະຫຼວດ 🚀)</b>.</li>
+                <li>ເປີດສະວິດ <b>"Public" (ສາທາລະນະ)</b> ແລ້ວກົດຢືນຢັນ — ຫຼັງຈາກນັ້ນລິ້ງ <code className="font-mono">ais-pre-...</code> ຈະໃຊ້ງານ 24/7 ໄດ້ທັນທີ!</li>
+              </ol>
+              <div className="flex items-center gap-2 pt-1">
+                <input
+                  type="text"
+                  readOnly
+                  value={SHARED_PRE_URL}
+                  className="flex-1 px-3 py-1.5 bg-white border border-amber-300 rounded-xl font-mono text-[11px] text-slate-700 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  onClick={() => handleCopyUrl(SHARED_PRE_URL, 'shared')}
+                  className="px-3 py-1.5 bg-amber-700 hover:bg-amber-800 text-white rounded-xl font-bold flex items-center gap-1.5 transition cursor-pointer shrink-0"
+                >
+                  {copiedUrl === 'shared' ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copiedUrl === 'shared' ? 'ສຳເນົາແລ້ວ' : 'ສຳເນົາ ais-pre'}</span>
                 </button>
               </div>
             </div>
 
             {/* Account & Cloud Database Grid */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-center">
-              <div className="sm:col-span-2 space-y-2.5 p-4 bg-emerald-50/60 border border-emerald-200 rounded-2xl">
+              <div className="sm:col-span-2 space-y-2.5 p-4 bg-slate-50 border border-slate-200 rounded-2xl">
                 <div>
                   <span className="text-[10px] font-bold uppercase text-emerald-800 block">
                     ບັນຊີຫຼັກທີ່ຜູກມັດຖາວອນ (Primary Account 24/7):
@@ -493,7 +709,7 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
 
               <div className="flex flex-col items-center justify-center p-3 bg-white border border-slate-200 rounded-2xl">
-                <QRCodeGenerator value={PERMANENT_APP_URL} size={104} />
+                <QRCodeGenerator value={activeOriginUrl} size={104} />
                 <span className="text-[10px] font-bold text-slate-500 mt-1.5">
                   ສະແກນເຂົ້າໃຊ້ຜ່ານມືຖື 24/7
                 </span>
@@ -512,6 +728,60 @@ export const Header: React.FC<HeaderProps> = ({
                 ປິດໜ້າຕ່າງ
               </button>
             </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Real-time Floating Toast Alert Popup */}
+    {activeToast && (
+      <div className="fixed top-20 right-4 z-50 max-w-sm w-full bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl border-2 border-indigo-500/80 p-4 animate-in slide-in-from-top-4 duration-200 transition-all">
+        <div className="flex items-start gap-3">
+          <div className="p-2.5 bg-gradient-to-br from-indigo-500 to-purple-600 text-white rounded-xl shadow-md shrink-0 animate-bounce">
+            <BellRing className="w-5 h-5" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-1">
+              <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800">
+                {activeToast.type === 'ACTION_REQUIRED' ? '⚡ ມອບໝາຍວຽກໃໝ່' : '📢 ອັບເດດສະຖານະ'}
+              </span>
+              <button
+                type="button"
+                onClick={() => setActiveToast(null)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg cursor-pointer"
+                title="ປິດ"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <h4 className="text-xs font-bold text-slate-900 mt-1 truncate">
+              {activeToast.title}
+            </h4>
+            <p className="text-[11px] text-slate-600 mt-0.5 leading-snug line-clamp-2">
+              {activeToast.message}
+            </p>
+            {activeToast.documentId && (
+              <div className="mt-2.5 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onOpenDocument(activeToast.documentId!);
+                    setActiveToast(null);
+                  }}
+                  className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold flex items-center gap-1 transition shadow-xs cursor-pointer"
+                >
+                  <span>ເບິ່ງເອກະສານດຽວນີ້</span>
+                  <ArrowRight className="w-3 h-3" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveToast(null)}
+                  className="px-2.5 py-1 text-slate-500 hover:text-slate-800 text-xs font-semibold cursor-pointer"
+                >
+                  ຮັບຊາບ
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

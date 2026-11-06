@@ -114,9 +114,13 @@ Return JSON with:
   });
 
   const distPath = path.join(__dirname, 'dist');
-  const isProd = process.env.NODE_ENV === 'production' && fs.existsSync(distPath);
+  const hasDist = fs.existsSync(path.join(distPath, 'index.html'));
+  const isDev =
+    process.env.NODE_ENV === 'development' ||
+    process.env.npm_lifecycle_event === 'dev' ||
+    !hasDist;
 
-  if (!isProd) {
+  if (isDev) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -125,7 +129,7 @@ Return JSON with:
     app.use(vite.middlewares);
   } else {
     app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
+    app.use((_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }

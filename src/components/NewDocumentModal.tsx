@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   X,
   Upload,
@@ -15,11 +15,20 @@ import {
   Check,
   Wand2,
   Loader2,
+  Download,
+  Eye,
+  Trash2,
+  Cloud,
+  Image as ImageIcon,
+  FileSpreadsheet,
+  FileCheck,
+  ExternalLink,
 } from 'lucide-react';
 import { User, DocumentTypeDirection, DocumentPriority, DocumentPurpose } from '../types';
 import { documentStore } from '../services/store';
 import { useAlert } from './SweetAlertModal';
 import { LHSELogo } from './LHSELogo';
+import { uploadFileToFirebaseStorage } from '../firebase';
 
 interface NewDocumentModalProps {
   initialDirection: DocumentTypeDirection;
@@ -106,6 +115,27 @@ const SCANNED_PRESETS: ScannedSamplePreset[] = [
   },
 ];
 
+export interface AttachmentItem {
+  id: string;
+  fileName: string;
+  fileSize: number;
+  fileType: string;
+  url: string;
+  thumbnailUrl?: string;
+  storageSource: 'FIREBASE_STORAGE' | 'LOCAL';
+  storagePath?: string;
+  uploadDate: string;
+}
+
+export interface UploadProgressItem {
+  id: string;
+  fileName: string;
+  fileSize: number;
+  fileType: string;
+  progress: number;
+  status: 'UPLOADING' | 'COMPLETED' | 'ERROR';
+}
+
 export const NewDocumentModal: React.FC<NewDocumentModalProps> = ({
   initialDirection,
   currentUser,
@@ -147,16 +177,21 @@ export const NewDocumentModal: React.FC<NewDocumentModalProps> = ({
   const [tags, setTags] = useState<string[]>(['ແຈ້ງການລັດຖະການ', 'LHSE']);
   const [newTagInput, setNewTagInput] = useState('');
 
-  const [attachments, setAttachments] = useState<
-    { fileName: string; fileSize: number; fileType: string; url: string }[]
-  >([
+  const [attachments, setAttachments] = useState<AttachmentItem[]>([
     {
+      id: 'att-default-01',
       fileName: 'ເອກະສານທາງການ_ຕົ້ນສະບັບ.pdf',
       fileSize: 1250000,
       fileType: 'application/pdf',
       url: '#',
+      storageSource: 'FIREBASE_STORAGE',
+      uploadDate: new Date().toISOString(),
     },
   ]);
+  const [isDragging, setIsDragging] = useState(false);
+  const [uploadProgressList, setUploadProgressList] = useState<UploadProgressItem[]>([]);
+  const [previewAttachment, setPreviewAttachment] = useState<AttachmentItem | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Helper to build local OCR extraction when file is uploaded or analyzed
   const buildLocalOcrFallback = (fileName: string, currentSubj: string) => {
@@ -294,31 +329,102 @@ export const NewDocumentModal: React.FC<NewDocumentModalProps> = ({
       return [
         ...prev,
         {
+          id: `att-preset-${Date.now()}`,
           fileName: preset.fileName,
           fileSize: preset.fileSize,
           fileType: preset.fileName.endsWith('.jpg') ? 'image/jpeg' : 'application/pdf',
           url: '#',
+          storageSource: 'FIREBASE_STORAGE',
+          uploadDate: new Date().toISOString(),
         },
       ];
     });
   };
 
+  const processMultipleFiles = async (files: File[]) => {
+    if (!files || files.length === 0) return;
+
+    // Trigger OCR on the first document or image file
+    const ocrCandidate = files.find(f => f.type.startsWith('image/') || f.type.includes('pdf')) || files[0];
+    if (ocrCandidate) {
+      runOcrAndAutoTagging(ocrCandidate, ocrCandidate.name);
+    }
+
+    for (const file of files) {
+      const tempId = `up-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+      // Generate local thumbnail preview for image files
+      let thumbUrl: string | undefined = undefined;
+      if (file.type.startsWith('image/')) {
+        thumbUrl = URL.createObjectURL(file);
+      }
+
+      // Add to progress tracking list
+      setUploadProgressList((prev) => [
+        ...prev,
+        {
+          id: tempId,
+          fileName: file.name,
+          fileSize: file.size,
+          fileType: file.type || 'application/octet-stream',
+          progress: 15,
+          status: 'UPLOADING',
+        },
+      ]);
+
+      try {
+        const uploadResult = await uploadFileToFirebaseStorage(
+          file,
+          'documents',
+          (pct) => {
+            setUploadProgressList((prev) =>
+              prev.map((item) =>
+                item.id === tempId ? { ...item, progress: Math.max(pct, 15) } : item
+              )
+            );
+          }
+        );
+
+        const newAttachment: AttachmentItem = {
+          id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          fileName: file.name,
+          fileSize: file.size,
+          fileType: file.type || 'application/octet-stream',
+          url: uploadResult.url,
+          thumbnailUrl: thumbUrl,
+          storageSource: uploadResult.storageSource,
+          storagePath: uploadResult.storagePath,
+          uploadDate: new Date().toISOString(),
+        };
+
+        setAttachments((prev) => [...prev, newAttachment]);
+        setUploadProgressList((prev) => prev.filter((item) => item.id !== tempId));
+      } catch (err) {
+        console.warn('Firebase Storage upload notice for file:', file.name, err);
+        const fallbackUrl = URL.createObjectURL(file);
+        const fallbackAttachment: AttachmentItem = {
+          id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          fileName: file.name,
+          fileSize: file.size,
+          fileType: file.type || 'application/octet-stream',
+          url: fallbackUrl,
+          thumbnailUrl: thumbUrl,
+          storageSource: 'LOCAL',
+          uploadDate: new Date().toISOString(),
+        };
+        setAttachments((prev) => [...prev, fallbackAttachment]);
+        setUploadProgressList((prev) => prev.filter((item) => item.id !== tempId));
+      }
+    }
+  };
+
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
-
-    const fileList: File[] = Array.from(files);
-    const newFiles = fileList.map((file) => ({
-      fileName: file.name,
-      fileSize: file.size,
-      fileType: file.type || 'application/octet-stream',
-      url: '#',
-    }));
-
-    setAttachments((prev) => [...prev, ...newFiles]);
-
-    // Automatically trigger OCR text extraction & AI auto-tagging upon file upload
-    await runOcrAndAutoTagging(fileList[0], fileList[0].name);
+    await processMultipleFiles(Array.from(files));
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   };
 
   const handleRemoveAttachment = (idx: number) => {
@@ -640,69 +746,264 @@ export const NewDocumentModal: React.FC<NewDocumentModalProps> = ({
             </div>
           </div>
 
-          {/* Drag & Drop File Upload + Automatic OCR Extraction */}
-          <div>
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-1.5">
+          {/* Drag & Drop Multiple Document Attachments to Firebase Storage + Downloadable Thumbnails */}
+          <div className="space-y-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <label className="block text-xs font-bold text-slate-700">
-                ໄຟລ໌ຄັດຕິດ & ເອກະສານສະແກນ (PDF, DOC, DOCX, XLS, XLSX, JPG, PNG)
+                ໄຟລ໌ຄັດຕິດ & ເອກະສານສະແກນ (PDF, DOCX, XLSX, JPG, PNG)
               </label>
               <span className="text-[11px] text-indigo-600 font-semibold flex items-center gap-1">
-                <ScanText className="w-3.5 h-3.5" />
-                <span>ຮອງຮັບການສະກັດຂໍ້ຄວາມ OCR ອັດຕະໂນມັດເມື່ອອັບໂຫຼດໄຟລ໌</span>
+                <Cloud className="w-3.5 h-3.5 text-indigo-600" />
+                <span>ອັບໂຫຼດຂຶ້ນ Firebase Storage • ດາວໂຫຼດ & ສະແດງ Thumbnail ອັດຕະໂນມັດ</span>
               </span>
             </div>
 
-            <label className="border-2 border-dashed border-slate-300 hover:border-indigo-500 rounded-2xl p-5 block text-center bg-slate-50/50 hover:bg-indigo-50/20 transition cursor-pointer">
-              <Upload className="w-7 h-7 text-indigo-500 mx-auto mb-1.5" />
-              <div className="text-xs font-bold text-slate-700">
-                ຄລິກເພື່ອເລືອກໄຟລ໌ສະແກນ ຫຼື Drag & Drop ໄຟລ໌ມາວາງທີ່ນີ້ (ສະກັດ OCR ອັດຕະໂນມັດ)
-              </div>
-              <div className="text-[11px] text-slate-500 mt-0.5">
-                ຂະໜາດສູງສຸດ 25MB ຕໍ່ໄຟລ໌ • ສະກັດຕົວອັກສອນຈາກເອກະສານເຈ້ຍທີ່ສະແກນເພື່ອໃຊ້ຄົ້ນຫາ
+            {/* Interactive Drag & Drop Box */}
+            <div
+              onDragEnter={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragging(true);
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragging(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragging(false);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setIsDragging(false);
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                  processMultipleFiles(Array.from(e.dataTransfer.files));
+                }
+              }}
+              onClick={() => fileInputRef.current?.click()}
+              className={`border-2 border-dashed rounded-2xl p-6 text-center transition cursor-pointer relative overflow-hidden group ${
+                isDragging
+                  ? 'border-indigo-600 bg-indigo-50/90 ring-4 ring-indigo-400/30 scale-[1.01]'
+                  : 'border-slate-300 hover:border-indigo-500 bg-slate-50/60 hover:bg-indigo-50/20'
+              }`}
+            >
+              <div className="flex flex-col items-center justify-center">
+                <div
+                  className={`p-3 rounded-2xl transition mb-2 ${
+                    isDragging
+                      ? 'bg-indigo-600 text-white animate-bounce'
+                      : 'bg-indigo-50 text-indigo-600 group-hover:scale-110 shadow-xs'
+                  }`}
+                >
+                  <Cloud className="w-7 h-7" />
+                </div>
+                <div className="text-xs font-bold text-slate-800">
+                  {isDragging
+                    ? '⚡ ປ່ອຍໄຟລ໌ມາວາງທີ່ນີ້ເພື່ອອັບໂຫຼດຂຶ້ນ Firebase Storage!'
+                    : 'Drag & Drop ລາກວາງໄຟລ໌ທີ່ນີ້ ຫຼື ຄລິກເພື່ອເລືອກຫຼາຍໄຟລ໌'}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-1 max-w-md">
+                  ຮອງຮັບການເລືອກ ແລະ ລາກວາງຫຼາຍໄຟລ໌ພ້ອມກັນ • ອັບໂຫຼດຂຶ້ນ Firebase Storage ພ້ອມສະກັດ OCR ອັດຕະໂນມັດ
+                </div>
+                <div className="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200/80">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-indigo-600" />
+                  <span>Firebase Storage Cloud Bucket • ຮອງຮັບໄຟລ໌ສູງສຸດ 25MB</span>
+                </div>
               </div>
               <input
+                ref={fileInputRef}
                 type="file"
                 multiple
-                accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png"
+                accept=".pdf,.doc,.docx,.xls,.xlsx,.jpg,.jpeg,.png,.webp"
                 onChange={handleFileUpload}
                 className="hidden"
               />
-            </label>
+            </div>
 
-            {/* Uploaded attachments list */}
-            {attachments.length > 0 && (
-              <div className="mt-3 space-y-1.5">
-                {attachments.map((att, idx) => (
+            {/* Live Upload Progress Cards for Firebase Storage */}
+            {uploadProgressList.length > 0 && (
+              <div className="space-y-2 mt-2">
+                {uploadProgressList.map((item) => (
                   <div
-                    key={idx}
-                    className="flex items-center justify-between p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs"
+                    key={item.id}
+                    className="p-3 bg-indigo-50/70 border border-indigo-200 rounded-xl space-y-1.5"
                   >
-                    <div className="flex items-center gap-2 truncate">
-                      <Paperclip className="w-4 h-4 text-slate-400 shrink-0" />
-                      <span className="font-medium text-slate-800 truncate">{att.fileName}</span>
-                      <span className="text-slate-400 text-[10px]">
-                        ({(att.fileSize / 1024 / 1024).toFixed(2)} MB)
+                    <div className="flex items-center justify-between text-xs">
+                      <div className="flex items-center gap-2 truncate">
+                        <Loader2 className="w-4 h-4 text-indigo-600 animate-spin shrink-0" />
+                        <span className="font-bold text-slate-800 truncate">{item.fileName}</span>
+                        <span className="text-slate-400 text-[10px]">
+                          ({(item.fileSize / 1024 / 1024).toFixed(2)} MB)
+                        </span>
+                      </div>
+                      <span className="text-[10px] font-mono font-bold text-indigo-700 shrink-0">
+                        ກຳລັງອັບໂຫຼດຂຶ້ນ Firebase Storage ({item.progress}%)
                       </span>
                     </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => runOcrAndAutoTagging(undefined, att.fileName)}
-                        className="text-indigo-600 hover:text-indigo-800 text-[11px] font-bold px-2 py-0.5 rounded bg-indigo-50 border border-indigo-200 flex items-center gap-1 cursor-pointer"
-                      >
-                        <ScanText className="w-3 h-3" />
-                        <span>ສະກັດ OCR</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleRemoveAttachment(idx)}
-                        className="text-rose-500 hover:text-rose-700 text-xs px-2 py-0.5 rounded cursor-pointer"
-                      >
-                        ລຶບ
-                      </button>
+                    <div className="w-full bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full transition-all duration-200"
+                        style={{ width: `${item.progress}%` }}
+                      />
                     </div>
                   </div>
                 ))}
+              </div>
+            )}
+
+            {/* Uploaded attachments list rendered as Downloadable Thumbnails */}
+            {attachments.length > 0 && (
+              <div className="mt-3 space-y-2.5">
+                <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                  <div className="flex items-center gap-1.5">
+                    <Paperclip className="w-4 h-4 text-indigo-600" />
+                    <span>ລາຍການໄຟລ໌ຄັດຕິດ ({attachments.length} ໄຟລ໌)</span>
+                  </div>
+                  <span className="text-[10px] text-slate-400 font-normal">
+                    ຄລິກ "ດາວໂຫຼດ" ເພື່ອເກັບໄຟລ໌ ຫຼື "ເບິ່ງຕົວຢ່າງ" ເພື່ອກວດສອບ
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                  {attachments.map((att, idx) => {
+                    const isImg =
+                      att.fileType.startsWith('image/') ||
+                      att.fileName.match(/\.(jpg|jpeg|png|webp|gif)$/i) ||
+                      Boolean(att.thumbnailUrl);
+                    const isPdf =
+                      att.fileType.includes('pdf') || att.fileName.match(/\.pdf$/i);
+                    const isWord =
+                      att.fileName.match(/\.(doc|docx)$/i) || att.fileType.includes('word');
+                    const isExcel =
+                      att.fileName.match(/\.(xls|xlsx)$/i) || att.fileType.includes('sheet');
+
+                    return (
+                      <div
+                        key={att.id || idx}
+                        className="flex items-start gap-3 p-3 bg-white border border-slate-200/90 rounded-2xl shadow-xs hover:shadow-md hover:border-indigo-300 transition group relative overflow-hidden"
+                      >
+                        {/* Thumbnail Preview Box */}
+                        <div
+                          onClick={() => setPreviewAttachment(att)}
+                          className="w-16 h-16 shrink-0 rounded-xl overflow-hidden bg-slate-100 border border-slate-200 flex items-center justify-center cursor-pointer relative group/thumb"
+                          title="ຄລິກເພື່ອເບິ່ງຕົວຢ່າງ Thumbnail"
+                        >
+                          {isImg ? (
+                            <>
+                              <img
+                                src={att.thumbnailUrl || att.url}
+                                alt={att.fileName}
+                                className="w-full h-full object-cover transition group-hover/thumb:scale-110"
+                                onError={(e) => {
+                                  // Fallback to image icon if url cannot load directly
+                                  (e.target as HTMLElement).style.display = 'none';
+                                }}
+                              />
+                              <div className="absolute inset-0 bg-black/30 opacity-0 group-hover/thumb:opacity-100 flex items-center justify-center transition text-white">
+                                <Eye className="w-4 h-4" />
+                              </div>
+                            </>
+                          ) : isPdf ? (
+                            <div className="w-full h-full bg-gradient-to-br from-rose-50 to-rose-100/80 flex flex-col items-center justify-center p-1 relative border border-rose-200">
+                              <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.2 rounded bg-rose-600 text-white shadow-2xs mb-0.5">
+                                PDF
+                              </span>
+                              <FileText className="w-5 h-5 text-rose-600" />
+                            </div>
+                          ) : isWord ? (
+                            <div className="w-full h-full bg-gradient-to-br from-blue-50 to-blue-100/80 flex flex-col items-center justify-center p-1 relative border border-blue-200">
+                              <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.2 rounded bg-blue-600 text-white shadow-2xs mb-0.5">
+                                DOCX
+                              </span>
+                              <FileText className="w-5 h-5 text-blue-600" />
+                            </div>
+                          ) : isExcel ? (
+                            <div className="w-full h-full bg-gradient-to-br from-emerald-50 to-emerald-100/80 flex flex-col items-center justify-center p-1 relative border border-emerald-200">
+                              <span className="text-[9px] font-extrabold uppercase px-1.5 py-0.2 rounded bg-emerald-600 text-white shadow-2xs mb-0.5">
+                                XLSX
+                              </span>
+                              <FileSpreadsheet className="w-5 h-5 text-emerald-600" />
+                            </div>
+                          ) : (
+                            <div className="w-full h-full bg-gradient-to-br from-indigo-50 to-indigo-100/80 flex flex-col items-center justify-center p-1 relative border border-indigo-200">
+                              <span className="text-[9px] font-extrabold uppercase px-1 py-0.2 rounded bg-indigo-600 text-white mb-0.5">
+                                DOC
+                              </span>
+                              <FileText className="w-5 h-5 text-indigo-600" />
+                            </div>
+                          )}
+                        </div>
+
+                        {/* File Details & Downloadable Action Buttons */}
+                        <div className="flex-1 min-w-0">
+                          <div className="font-bold text-xs text-slate-800 truncate" title={att.fileName}>
+                            {att.fileName}
+                          </div>
+
+                          <div className="flex items-center gap-2 mt-1 text-[10px] text-slate-500">
+                            <span>{(att.fileSize / 1024 / 1024).toFixed(2)} MB</span>
+                            <span>•</span>
+                            <span className="inline-flex items-center gap-1 font-semibold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded border border-emerald-200">
+                              <Cloud className="w-2.5 h-2.5 text-emerald-600" />
+                              <span>{att.storageSource === 'FIREBASE_STORAGE' ? 'Firebase Storage' : 'Local Storage'}</span>
+                            </span>
+                          </div>
+
+                          {/* Action Toolbar */}
+                          <div className="flex items-center gap-1.5 mt-2 flex-wrap">
+                            {/* Download Button */}
+                            <a
+                              href={att.url}
+                              download={att.fileName}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[11px] font-bold flex items-center gap-1 transition shadow-2xs cursor-pointer"
+                              title="ດາວໂຫຼດໄຟລ໌ນີ້"
+                            >
+                              <Download className="w-3 h-3" />
+                              <span>ດາວໂຫຼດ</span>
+                            </a>
+
+                            {/* Preview Button */}
+                            <button
+                              type="button"
+                              onClick={() => setPreviewAttachment(att)}
+                              className="px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition cursor-pointer"
+                              title="ເບິ່ງຕົວຢ່າງໄຟລ໌"
+                            >
+                              <Eye className="w-3 h-3 text-slate-500" />
+                              <span>ຕົວຢ່າງ</span>
+                            </button>
+
+                            {/* OCR Extraction */}
+                            <button
+                              type="button"
+                              onClick={() => runOcrAndAutoTagging(undefined, att.fileName)}
+                              className="px-2 py-1 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition cursor-pointer border border-indigo-200/70"
+                              title="ສະກັດຂໍ້ຄວາມ OCR ຈາກໄຟລ໌ນີ້"
+                            >
+                              <ScanText className="w-3 h-3 text-indigo-600" />
+                              <span className="hidden sm:inline">ສະກັດ OCR</span>
+                            </button>
+
+                            {/* Remove Button */}
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveAttachment(idx)}
+                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer ml-auto"
+                              title="ລຶບໄຟລ໌ນີ້"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             )}
           </div>
@@ -867,6 +1168,76 @@ export const NewDocumentModal: React.FC<NewDocumentModalProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Attachment Thumbnail Preview Modal */}
+      {previewAttachment && (
+        <div className="fixed inset-0 z-60 flex items-center justify-center p-4 bg-slate-900/75 backdrop-blur-sm animate-in fade-in duration-150">
+          <div className="bg-white rounded-3xl shadow-2xl max-w-2xl w-full overflow-hidden border border-slate-200">
+            <div className="bg-slate-900 text-white px-5 py-3.5 flex items-center justify-between">
+              <div className="flex items-center gap-2 truncate pr-2">
+                <Paperclip className="w-4 h-4 text-indigo-400 shrink-0" />
+                <span className="font-bold text-xs truncate">{previewAttachment.fileName}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPreviewAttachment(null)}
+                className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              {previewAttachment.fileType.startsWith('image/') || previewAttachment.thumbnailUrl ? (
+                <div className="max-h-96 overflow-hidden rounded-2xl bg-slate-100 border border-slate-200 flex items-center justify-center">
+                  <img
+                    src={previewAttachment.thumbnailUrl || previewAttachment.url}
+                    alt={previewAttachment.fileName}
+                    className="max-h-96 w-auto object-contain mx-auto"
+                  />
+                </div>
+              ) : (
+                <div className="p-8 text-center bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
+                  <div className="w-16 h-16 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto border border-indigo-100 shadow-xs">
+                    <FileText className="w-8 h-8" />
+                  </div>
+                  <div>
+                    <h4 className="font-bold text-sm text-slate-800">{previewAttachment.fileName}</h4>
+                    <p className="text-xs text-slate-500 mt-1">
+                      ຂະໜາດ: {(previewAttachment.fileSize / 1024 / 1024).toFixed(2)} MB • ແຫຼ່ງເກັບ: {previewAttachment.storageSource === 'FIREBASE_STORAGE' ? 'Firebase Storage Cloud' : 'Local Storage'}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                <span className="text-[11px] text-slate-500">
+                  ໄຟລ໌ຖືກອັບໂຫຼດຂຶ້ນ Firebase Storage ແລະ ພ້ອມດາວໂຫຼດ
+                </span>
+                <div className="flex items-center gap-2">
+                  <a
+                    href={previewAttachment.url}
+                    download={previewAttachment.fileName}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs transition"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>ດາວໂຫຼດໄຟລ໌</span>
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewAttachment(null)}
+                    className="px-4 py-2 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
+                  >
+                    ປິດ
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

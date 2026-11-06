@@ -6,6 +6,23 @@ import { db, auth, handleFirestoreError, OperationType } from '../firebase';
 import { collection, doc, setDoc, deleteDoc, onSnapshot } from 'firebase/firestore';
 import { onAuthStateChanged } from 'firebase/auth';
 
+export function getDocStatusLao(status: string): string {
+  switch (status) {
+    case 'REGISTERED': return 'ລົງທະບຽນແລ້ວ';
+    case 'IN_PROGRESS': return 'ກຳລັງດຳເນີນການ';
+    case 'PENDING_REVIEW': return 'ລໍຖ້າກວດກາ';
+    case 'PENDING_APPROVAL': return 'ລໍຖ້າອະນຸມັດ';
+    case 'PENDING_SIGNATURE': return 'ລໍຖ້າລົງລາຍເຊັນ E-Signature';
+    case 'APPROVED': return 'ອະນຸມັດແລ້ວ';
+    case 'REJECTED': return 'ປະຕິເສດ';
+    case 'RETURNED': return 'ສົ່ງກັບຄືນແກ້ໄຂ';
+    case 'ARCHIVED': return 'ເກັບເຂົ້າ E-Storage';
+    case 'SENT': return 'ສົ່ງອອກແລ້ວ';
+    case 'COMPLETED': return 'ສຳເລັດສົມບູນ';
+    default: return status;
+  }
+}
+
 const STORAGE_KEYS = {
   DOCUMENTS: 'edoc_documents_v4',
   FOLDERS: 'edoc_folders_v4',
@@ -89,19 +106,69 @@ class DocumentStore {
   private initFirestoreSync() {
     if (typeof window === 'undefined') return;
     let unsubSnapshot: (() => void) | null = null;
-    onAuthStateChanged(auth, (firebaseUser) => {
-      if (unsubSnapshot) {
-        unsubSnapshot();
-        unsubSnapshot = null;
-      }
-      if (firebaseUser) {
-        const docsPath = 'documents';
+    let isInitialLoad = true;
+
+    const setupListener = () => {
+      const docsPath = 'documents';
+      try {
         unsubSnapshot = onSnapshot(
           collection(db, docsPath),
           (snapshot) => {
             if (!snapshot.empty) {
+              const previousDocsMap = new Map(this.documents.map(d => [d.id, d]));
               const cloudDocs = snapshot.docs.map(d => d.data() as DocumentRecord);
+
               if (cloudDocs.length > 0) {
+                // If not initial load, detect real-time status changes and new assignments
+                if (!isInitialLoad) {
+                  snapshot.docChanges().forEach((change) => {
+                    const changedDoc = change.doc.data() as DocumentRecord;
+                    const oldDoc = previousDocsMap.get(changedDoc.id);
+
+                    if (change.type === 'modified' && oldDoc) {
+                      // Check for document status change
+                      if (changedDoc.status !== oldDoc.status) {
+                        const statusLao = getDocStatusLao(changedDoc.status);
+                        const notifItem = this.addNotification({
+                          title: `ປ່ຽນສະຖານະ: ${changedDoc.documentNumber}`,
+                          message: `ເອກະສານ "${changedDoc.subject}" ປ່ຽນສະຖານະເປັນ: ${statusLao}`,
+                          type: changedDoc.status === 'COMPLETED' ? 'COMPLETED' : changedDoc.status === 'RETURNED' ? 'RETURNED' : 'INFO',
+                          documentId: changedDoc.id,
+                          documentNumber: changedDoc.documentNumber,
+                          userId: 'ALL',
+                        });
+                        this.dispatchRealtimeAlert(notifItem);
+                      }
+
+                      // Check for new assignment or workflow step forward
+                      if (changedDoc.currentStepOrder !== oldDoc.currentStepOrder) {
+                        const nextStep = changedDoc.workflowSteps.find(s => s.stepOrder === changedDoc.currentStepOrder);
+                        const notifItem = this.addNotification({
+                          title: `🔔 ມອບໝາຍວຽກໃໝ່: ${changedDoc.documentNumber}`,
+                          message: `ເອກະສານ "${changedDoc.subject}" ສົ່ງຕໍ່ເຖິງຂັ້ນຕອນ: ${nextStep?.stepNameLao || 'ຂັ້ນຕອນໃໝ່'}`,
+                          type: 'ACTION_REQUIRED',
+                          documentId: changedDoc.id,
+                          documentNumber: changedDoc.documentNumber,
+                          userId: nextStep?.assignedUserId || 'ALL',
+                        });
+                        this.dispatchRealtimeAlert(notifItem);
+                      }
+                    } else if (change.type === 'added' && !previousDocsMap.has(changedDoc.id)) {
+                      // New document added to Firestore
+                      const notifItem = this.addNotification({
+                        title: `📄 ເອກະສານໃໝ່: ${changedDoc.documentNumber}`,
+                        message: `ມີການລົງທະບຽນເອກະສານໃໝ່: "${changedDoc.subject}" (${changedDoc.direction === 'INCOMING' ? 'ຂາເຂົ້າ' : 'ຂາອອກ'})`,
+                        type: 'INFO',
+                        documentId: changedDoc.id,
+                        documentNumber: changedDoc.documentNumber,
+                        userId: 'ALL',
+                      });
+                      this.dispatchRealtimeAlert(notifItem);
+                    }
+                  });
+                }
+
+                isInitialLoad = false;
                 this.documents = cloudDocs;
                 localStorage.setItem(STORAGE_KEYS.DOCUMENTS, JSON.stringify(this.documents));
                 this.notify();
@@ -109,14 +176,38 @@ class DocumentStore {
             } else {
               // Seed initial documents to Firestore when empty
               this.syncAllDocumentsToCloud();
+              isInitialLoad = false;
             }
           },
           (error) => {
-            handleFirestoreError(error, OperationType.LIST, docsPath);
+            console.warn('Firestore onSnapshot listener status:', error.message);
           }
         );
+      } catch (err) {
+        console.warn('Could not attach Firestore onSnapshot listener:', err);
       }
+    };
+
+    onAuthStateChanged(auth, (firebaseUser) => {
+      if (unsubSnapshot) {
+        unsubSnapshot();
+        unsubSnapshot = null;
+      }
+      setupListener();
     });
+
+    // Also attach on initial boot
+    setupListener();
+  }
+
+  private dispatchRealtimeAlert(notif: NotificationItem) {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('edoc:realtime-notification', {
+          detail: notif,
+        })
+      );
+    }
   }
 
   private async syncAllDocumentsToCloud() {
@@ -362,7 +453,7 @@ class DocumentStore {
     this.saveState();
   }
 
-  addNotification(notif: Omit<NotificationItem, 'id' | 'createdAt' | 'read'>) {
+  addNotification(notif: Omit<NotificationItem, 'id' | 'createdAt' | 'read'>): NotificationItem {
     const newNotif: NotificationItem = {
       ...notif,
       id: `notif-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
@@ -371,6 +462,7 @@ class DocumentStore {
     };
     this.notifications.unshift(newNotif);
     this.saveState();
+    return newNotif;
   }
 
   markNotificationAsRead(id: string) {
@@ -559,7 +651,15 @@ class DocumentStore {
       comments?: string;
       ocrText?: string;
       tags?: string[];
-      attachments?: { fileName: string; fileSize: number; fileType: string; url: string }[];
+      attachments?: {
+        fileName: string;
+        fileSize: number;
+        fileType: string;
+        url: string;
+        thumbnailUrl?: string;
+        storageSource?: 'FIREBASE_STORAGE' | 'LOCAL';
+        storagePath?: string;
+      }[];
     }
   ): DocumentRecord {
     const isIncoming = data.direction === 'INCOMING';
@@ -604,6 +704,9 @@ class DocumentStore {
         uploadDate: new Date().toISOString(),
         uploadedBy: user.fullName,
         url: a.url,
+        thumbnailUrl: a.thumbnailUrl,
+        storageSource: a.storageSource,
+        storagePath: a.storagePath,
       })),
       signatures: [],
       currentVersion: 1,
@@ -1779,6 +1882,50 @@ class DocumentStore {
 
     this.saveState();
     return { success: true, newVersionTag, targetVersionTag: targetVer.versionTag };
+  }
+
+  /**
+   * Helper to trigger a real-time status change notification alert for testing
+   */
+  simulateRealtimeStatusChange(): NotificationItem {
+    const doc = this.documents[0] || INITIAL_DOCUMENTS[0];
+    const statuses = ['PENDING_SIGNATURE', 'COMPLETED', 'APPROVED', 'IN_PROGRESS'];
+    const randomStatus = statuses[Math.floor(Math.random() * statuses.length)];
+    const statusLao = getDocStatusLao(randomStatus);
+
+    const notif = this.addNotification({
+      title: `⚡ [Real-Time] ປ່ຽນສະຖານະ: ${doc.documentNumber}`,
+      message: `ເອກະສານ "${doc.subject}" ປ່ຽນສະຖານະເປັນ: ${statusLao} (ອັບເດດຈາກ Firestore Cloud)`,
+      type: randomStatus === 'COMPLETED' ? 'COMPLETED' : 'INFO',
+      documentId: doc.id,
+      documentNumber: doc.documentNumber,
+      userId: 'ALL',
+    });
+    this.dispatchRealtimeAlert(notif);
+    return notif;
+  }
+
+  /**
+   * Helper to trigger a real-time new assignment notification alert for testing
+   */
+  simulateRealtimeAssignment(user: User): NotificationItem {
+    const doc = this.documents[1] || this.documents[0] || INITIAL_DOCUMENTS[0];
+    const nextStepName = user.role === 'DIRECTOR'
+      ? 'ຂັ້ນຕອນທີ 4: ລົງລາຍເຊັນ E-Signature ອະນຸມັດ'
+      : user.role === 'DEPARTMENT_HEAD'
+      ? 'ຂັ້ນຕອນທີ 3: ພິຈາລະນາ ແລະ ໃສ່ທິດຊີ້ນຳ'
+      : 'ຂັ້ນຕອນທີ 2: ກວດກາ ແລະ ສົ່ງຕໍ່ເອກະສານ';
+
+    const notif = this.addNotification({
+      title: `🔔 [Real-Time] ມອບໝາຍວຽກໃໝ່ເຖິງທ່ານ!`,
+      message: `ເອກະສານເລກທີ ${doc.documentNumber} (${doc.subject}) ຕ້ອງການໃຫ້ທ່ານດຳເນີນການ: ${nextStepName}`,
+      type: 'ACTION_REQUIRED',
+      documentId: doc.id,
+      documentNumber: doc.documentNumber,
+      userId: user.id,
+    });
+    this.dispatchRealtimeAlert(notif);
+    return notif;
   }
 
   resetToDefault() {

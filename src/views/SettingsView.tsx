@@ -89,20 +89,24 @@ export const SettingsView: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs bg-black/25 p-4 rounded-xl border border-white/10">
           <div>
             <span className="text-emerald-300 text-[10px] uppercase font-bold block">
-              ລິ້ງເຂົ້າໃຊ້ງານຖາວອນ 24/7 (Shared Production URL):
+              1. ລິ້ງເປີດໃຊ້ງານໄດ້ທັນທີປັດຈຸບັນ (Active Live URL - ບໍ່ຕິດ 404):
             </span>
             <span className="font-mono font-bold text-white break-all">
-              https://ais-pre-dlbhbuxfeduv3tyaf7wmp3-966105322065.asia-southeast1.run.app
+              https://ais-dev-dlbhbuxfeduv3tyaf7wmp3-966105322065.asia-southeast1.run.app
             </span>
           </div>
           <div>
             <span className="text-emerald-300 text-[10px] uppercase font-bold block">
-              ບັນຊີຜູ້ຄຸ້ມຄອງລະບົບຫຼັກ (24/7 Primary Account):
+              2. ບັນຊີຜູ້ຄຸ້ມຄອງລະບົບຫຼັກ (24/7 Primary Account):
             </span>
             <span className="font-mono font-bold text-white">
               nokohn@mail.com (Password: admin123456)
             </span>
           </div>
+        </div>
+
+        <div className="text-[11px] bg-amber-500/20 border border-amber-400/40 rounded-xl p-3 text-amber-100 leading-relaxed">
+          <span className="font-bold text-amber-300">💡 ໝາຍເຫດສຳຄັນສຳລັບລິ້ງ Shared URL (ais-pre-...):</span> ຫາກເປີດລິ້ງ <code className="font-mono font-bold text-white">ais-pre-dlbhbuxfeduv3tyaf7wmp3-966105322065.asia-southeast1.run.app</code> ແລ້ວຂຶ້ນ <b>"Error: Page not found"</b> ແມ່ນຍ້ອນຍັງບໍ່ທັນໄດ້ກົດປຸ່ມເປີດ Public ຢູ່ໜ້າຈໍ Google AI Studio. ກະລຸນາກົດປຸ່ມ <b>"Share" (ແຊຣ໌)</b> ຫຼື <b>"Deploy" (ຮູບຈະຫຼວດ 🚀)</b> ຢູ່ <b>ມຸມຂວາເທິງສຸດຂອງໜ້າຈໍ AI Studio</b> ແລ້ວເປີດ Public 1 ຄັ້ງ. ໃນລະຫວ່າງນີ້ ທ່ານສາມາດໃຊ້ລິ້ງ <code className="font-mono font-bold text-emerald-300">ais-dev-...</code> ຂ້າງເທິງນີ້ໄດ້ທັນທີ!
         </div>
       </div>
 

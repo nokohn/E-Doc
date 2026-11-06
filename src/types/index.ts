@@ -60,6 +60,9 @@ export interface DocumentAttachment {
   uploadDate: string;
   uploadedBy: string;
   url: string;
+  thumbnailUrl?: string;
+  storageSource?: 'FIREBASE_STORAGE' | 'LOCAL';
+  storagePath?: string;
 }
 
 export interface ESignatureData {
